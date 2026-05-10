@@ -54,12 +54,12 @@ class MainActivity : ComponentActivity() {
 fun MainScreen() {
     val context = LocalContext.current
     var currentPlaylistName by remember { mutableStateOf<String?>(null) }
-    var isNavVisible by remember { mutableStateOf(false) } // 导航栏显隐状态
+    var isNavVisible by remember { mutableStateOf(false) } 
     
     val availableFolders = remember { getAvailableVideoFolders(context) }
     val videos = remember(currentPlaylistName) { getVideos(context, currentPlaylistName) }
 
-    // 自动隐藏逻辑：如果显示了，3秒后自动关闭
+    // 3秒自动隐藏
     LaunchedEffect(isNavVisible) {
         if (isNavVisible) {
             delay(3000)
@@ -68,15 +68,16 @@ fun MainScreen() {
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        // 视频播放器
-        TikTokPlayer(videos = videos, onScreenClick = { yOffset, screenHeight ->
-            // 如果点击的是屏幕上方 1/3，则切换导航栏显示
-            if (yOffset < screenHeight / 3) {
-                isNavVisible = !isNavVisible
-            }
-        })
+        // 视频层
+        TikTokPlayer(videos = videos)
 
-        // 导航栏：带进入/退出动画
+        // 交互层：顶部 1/3 区域点击呼出导航，其余区域点击暂停
+        Column(modifier = Modifier.fillMaxSize()) {
+            Box(modifier = Modifier.fillMaxWidth().weight(1f).clickable { isNavVisible = !isNavVisible })
+            Box(modifier = Modifier.fillMaxWidth().weight(2f)) // 留给视频页面的点击暂停逻辑
+        }
+
+        // 导航栏
         AnimatedVisibility(
             visible = isNavVisible,
             enter = fadeIn() + slideInVertically(),
@@ -85,22 +86,14 @@ fun MainScreen() {
             LazyRow(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = 0.4f)) // 导航呼出时带点半透明底，方便看清字
-                    .padding(top = 50.dp, bottom = 15.dp),
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .padding(top = 40.dp, bottom = 20.dp),
                 contentPadding = PaddingValues(horizontal = 20.dp),
-                horizontalArrangement = Arrangement.spacedBy(24.dp)
+                horizontalArrangement = Arrangement.spacedBy(25.dp)
             ) {
-                item {
-                    CategoryTab("全部", currentPlaylistName == null) { 
-                        currentPlaylistName = null
-                        isNavVisible = false // 选中后隐藏
-                    }
-                }
+                item { CategoryTab("全部", currentPlaylistName == null) { currentPlaylistName = null; isNavVisible = false } }
                 items(availableFolders) { folder ->
-                    CategoryTab(folder, currentPlaylistName == folder) { 
-                        currentPlaylistName = folder
-                        isNavVisible = false 
-                    }
+                    CategoryTab(folder, currentPlaylistName == folder) { currentPlaylistName = folder; isNavVisible = false }
                 }
             }
         }
@@ -120,33 +113,21 @@ fun CategoryTab(title: String, isSelected: Boolean, onClick: () -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun TikTokPlayer(videos: List<Uri>, onScreenClick: (Float, Int) -> Unit) {
-    if (videos.isEmpty()) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("未找到视频", color = Color.White.copy(alpha = 0.3f))
-        }
-        return
-    }
-
+fun TikTokPlayer(videos: List<Uri>) {
+    if (videos.isEmpty()) return
     val pagerState = rememberPagerState(pageCount = { videos.size })
-    
     VerticalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
-        VideoPage(
-            uri = videos[page],
-            play = pagerState.currentPage == page,
-            onToggleNav = onScreenClick
-        )
+        VideoPage(uri = videos[page], play = pagerState.currentPage == page)
     }
 }
 
 @Composable
-fun VideoPage(uri: Uri, play: Boolean, onToggleNav: (Float, Int) -> Unit) {
+fun VideoPage(uri: Uri, play: Boolean) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var pausedByUser by remember { mutableStateOf(false) }
     var isAppInForeground by remember { mutableStateOf(true) }
 
-    // 生命周期监听
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_PAUSE) isAppInForeground = false
@@ -171,45 +152,45 @@ fun VideoPage(uri: Uri, play: Boolean, onToggleNav: (Float, Int) -> Unit) {
     DisposableEffect(Unit) { onDispose { exoPlayer.release() } }
 
     Box(
-        modifier = Modifier.fillMaxSize().pointerInteropFilter { event ->
-            // 利用坐标判断点击位置
-            if (event.action == android.view.MotionEvent.ACTION_UP) {
-                val screenHeight = context.resources.displayMetrics.heightPixels
-                if (event.y < screenHeight / 3) {
-                    onToggleNav(event.y, screenHeight) // 点击上方触发导航
-                } else {
-                    pausedByUser = !pausedByUser // 点击下方触发播放/暂停
-                }
-            }
-            true
-        },
+        modifier = Modifier.fillMaxSize().clickable { pausedByUser = !pausedByUser },
         contentAlignment = Alignment.Center
     ) {
         AndroidView(
             factory = { PlayerView(it).apply { player = exoPlayer; useController = false } },
             modifier = Modifier.fillMaxSize()
         )
-
         if (pausedByUser) {
             Icon(
                 imageVector = Icons.Filled.PlayArrow,
                 contentDescription = null,
-                modifier = Modifier.size(72.dp),
-                tint = Color.White.copy(alpha = 0.15f) // 极浅
+                modifier = Modifier.size(80.dp),
+                tint = Color.White.copy(alpha = 0.15f)
             )
         }
     }
 }
 
-// 注意：由于 GitHub 编辑环境需要最简依赖，
-// 如果编译报错，请将上面的 `pointerInteropFilter` 换回简单的 `clickable`。
-// 下方是 `clickable` 版更稳定的 VideoPage 点击实现：
+// 获取文件夹逻辑
+fun getAvailableVideoFolders(context: android.content.Context): List<String> {
+    val folders = mutableSetOf<String>()
+    val projection = arrayOf(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+    context.contentResolver.query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, projection, null, null, null)?.use { cursor ->
+        val columnIndex = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+        while (cursor.moveToNext()) { cursor.getString(columnIndex)?.let { folders.add(it) } }
+    }
+    return folders.toList().sorted()
+}
 
-/* Box(
-    modifier = Modifier.fillMaxSize().clickable { pausedByUser = !pausedByUser }
-) { ... }
-并在 MainScreen 的 TikTokPlayer 外部包裹一个透明的控制层，专门拦截顶部点击。
-*/
-
-// 保持之前 getAvailableVideoFolders 和 getVideos 函数不变...
-// (为节省篇幅，此处省略这两个数据函数，请沿用上一版本的)
+// 获取视频逻辑
+fun getVideos(context: android.content.Context, albumName: String? = null): List<Uri> {
+    val videoList = mutableListOf<Uri>()
+    val selection = if (albumName != null) "${MediaStore.Video.Media.BUCKET_DISPLAY_NAME} = ?" else null
+    val selectionArgs = if (albumName != null) arrayOf(albumName) else null
+    context.contentResolver.query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Video.Media._ID), selection, selectionArgs, MediaStore.Video.Media.DATE_ADDED + " DESC")?.use { cursor ->
+        val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
+        while (cursor.moveToNext()) {
+            videoList.add(Uri.withAppendedPath(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cursor.getLong(idColumn).toString()))
+        }
+    }
+    return videoList
+}
