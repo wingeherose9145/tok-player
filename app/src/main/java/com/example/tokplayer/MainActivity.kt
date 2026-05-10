@@ -5,16 +5,18 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.*
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState // ✅ 新增：需要记住 LazyRow 的滚动状态
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
@@ -43,6 +45,10 @@ import kotlinx.coroutines.delay
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // 1. ✅ 解决自动熄屏问题：只要 App 在前台，屏幕常亮
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_VIDEO) 
             != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_MEDIA_VIDEO), 1)
@@ -60,75 +66,56 @@ fun MainScreen() {
     val availableFolders = remember { getAvailableVideoFolders(context) }
     val videos = remember(currentPlaylistName) { getVideos(context, currentPlaylistName) }
 
-    // ✅ 核心修改 1：为导航栏引入滚动状态管理
     val lazyListState = rememberLazyListState()
-    
-    // ✅ 核心修改 2：引入一个触发器状态，每次操作（比如点击顶栏空白处）时增加它，来强行重置计时器
     var hideTimerResetTrigger by remember { mutableIntStateOf(0) }
 
-    // ✅ 核心修改 3：优化的计时隐藏逻辑。
-    // `delay()` 会在这个 LaunchedEffect 被重新启动时被自动取消。
-    // 这里我们观察四个状态，只要有一个变了，计时器都会重新开始计时：
-    // 1. 是否可见 (isNavVisible)
-    // 2. 触发器状态 (hideTimerResetTrigger)
-    // 3. 是否正在滚动 (lazyListState.isScrollInProgress)
+    // 自动隐藏逻辑
     LaunchedEffect(isNavVisible, hideTimerResetTrigger, lazyListState.isScrollInProgress) {
         if (isNavVisible) {
-            
-            // 如果用户正在滚动导航栏，我们就不执行计时器，而是让 Effect 等待下一次滚动状态变为了 false。
-            if (lazyListState.isScrollInProgress) {
-                return@LaunchedEffect
-            }
-            
-            // 如果没操作，则开始3秒延迟
+            if (lazyListState.isScrollInProgress) return@LaunchedEffect
             delay(3000) 
-            
-            // 双重检查，防止在3秒内用户刚好手动隐藏了导航
-            if (isNavVisible) {
-                isNavVisible = false
-            }
+            if (isNavVisible) isNavVisible = false
         }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        // 1. 视频播放层
+        // 视频播放层
         TikTokPlayer(videos = videos)
 
-        // 2. 透明交互层
+        // 交互层：顶部 1/3 区域控制导航显隐
         Column(modifier = Modifier.fillMaxSize()) {
-            // 点击上方 1/3 区域显隐导航。
-            // 当呼出导航时，重置计时器。
-            Box(modifier = Modifier.fillMaxWidth().weight(1f).clickable { 
-                isNavVisible = !isNavVisible 
-                if (isNavVisible) {
-                    // 当显现时强制重置
-                    hideTimerResetTrigger++
+            Box(modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null // 去掉点击时的灰色水波纹，保持纯净
+                ) { 
+                    isNavVisible = !isNavVisible 
+                    if (isNavVisible) hideTimerResetTrigger++
                 }
-            })
+            )
             Box(modifier = Modifier.fillMaxWidth().weight(2f)) 
         }
 
-        // 3. 导航栏层
+        // 导航栏
         AnimatedVisibility(
             visible = isNavVisible,
             enter = fadeIn() + slideInVertically(),
             exit = fadeOut() + slideOutVertically()
         ) {
             LazyRow(
-                state = lazyListState, // ✅ 核心修改 4：将 LazyRow 与状态绑定，这样才能监听它的滚动状态。
+                state = lazyListState,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = 0.5f))
-                    // 如果你需要点击导航栏除文字外的空白区域也重置计时器，则可以加在这里（不推荐，可能会导致文字难以点击）
-                    // .clickable(indication = null, interactionSource = remember { remember{ MutableInteractionSource() } }){ hideTimerResetTrigger++ }
+                    .background(Color.Black.copy(alpha = 0.6f)) // 稍微加深底色
                     .padding(top = 50.dp, bottom = 20.dp),
                 contentPadding = PaddingValues(horizontal = 20.dp),
-                horizontalArrangement = Arrangement.spacedBy(25.dp)
+                horizontalArrangement = Arrangement.spacedBy(15.dp) // 缩小间距，靠点击热区撑开
             ) {
                 item {
                     CategoryTab("全部", currentPlaylistName == null) { 
                         currentPlaylistName = null
-                        // 选中新列表时，通常立即隐藏导航栏，不需要延迟。符合标准 UX。
                         isNavVisible = false 
                     }
                 }
@@ -145,12 +132,19 @@ fun MainScreen() {
 
 @Composable
 fun CategoryTab(title: String, isSelected: Boolean, onClick: () -> Unit) {
+    // 2. ✅ 优化触摸灵敏度：增加 Padding 扩大点击热区
+    // 3. ✅ 加大导航文字：18.sp 和 16.sp
     Text(
         text = title,
-        color = if (isSelected) Color.White else Color.White.copy(alpha = 0.3f),
+        color = if (isSelected) Color.White else Color.White.copy(alpha = 0.35f),
         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-        fontSize = if (isSelected) 16.sp else 14.sp,
-        modifier = Modifier.clickable { onClick() }
+        fontSize = if (isSelected) 18.sp else 16.sp,
+        modifier = Modifier
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null // 导航项点击也去掉阴影，更丝滑
+            ) { onClick() }
+            .padding(horizontal = 12.dp, vertical = 8.dp) // 这里就是“灵敏度”的关键，增加了手指触发的范围
     )
 }
 
@@ -207,12 +201,13 @@ fun VideoPage(uri: Uri, play: Boolean) {
                 imageVector = Icons.Filled.PlayArrow,
                 contentDescription = null,
                 modifier = Modifier.size(80.dp),
-                tint = Color.White.copy(alpha = 0.15f)
+                tint = Color.White.copy(alpha = 0.2f)
             )
         }
     }
 }
 
+// 获取分类文件夹
 fun getAvailableVideoFolders(context: android.content.Context): List<String> {
     val folders = mutableSetOf<String>()
     val projection = arrayOf(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
@@ -223,6 +218,7 @@ fun getAvailableVideoFolders(context: android.content.Context): List<String> {
     return folders.toList().sorted()
 }
 
+// 获取视频列表
 fun getVideos(context: android.content.Context, albumName: String? = null): List<Uri> {
     val videoList = mutableListOf<Uri>()
     val selection = if (albumName != null) "${MediaStore.Video.Media.BUCKET_DISPLAY_NAME} = ?" else null
