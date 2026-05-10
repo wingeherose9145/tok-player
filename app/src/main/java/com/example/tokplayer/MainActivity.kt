@@ -14,6 +14,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState // ✅ 新增：需要记住 LazyRow 的滚动状态
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
@@ -59,11 +60,33 @@ fun MainScreen() {
     val availableFolders = remember { getAvailableVideoFolders(context) }
     val videos = remember(currentPlaylistName) { getVideos(context, currentPlaylistName) }
 
-    // 3秒无操作自动隐藏导航栏
-    LaunchedEffect(isNavVisible) {
+    // ✅ 核心修改 1：为导航栏引入滚动状态管理
+    val lazyListState = rememberLazyListState()
+    
+    // ✅ 核心修改 2：引入一个触发器状态，每次操作（比如点击顶栏空白处）时增加它，来强行重置计时器
+    var hideTimerResetTrigger by remember { mutableIntStateOf(0) }
+
+    // ✅ 核心修改 3：优化的计时隐藏逻辑。
+    // `delay()` 会在这个 LaunchedEffect 被重新启动时被自动取消。
+    // 这里我们观察四个状态，只要有一个变了，计时器都会重新开始计时：
+    // 1. 是否可见 (isNavVisible)
+    // 2. 触发器状态 (hideTimerResetTrigger)
+    // 3. 是否正在滚动 (lazyListState.isScrollInProgress)
+    LaunchedEffect(isNavVisible, hideTimerResetTrigger, lazyListState.isScrollInProgress) {
         if (isNavVisible) {
-            delay(3000)
-            isNavVisible = false
+            
+            // 如果用户正在滚动导航栏，我们就不执行计时器，而是让 Effect 等待下一次滚动状态变为了 false。
+            if (lazyListState.isScrollInProgress) {
+                return@LaunchedEffect
+            }
+            
+            // 如果没操作，则开始3秒延迟
+            delay(3000) 
+            
+            // 双重检查，防止在3秒内用户刚好手动隐藏了导航
+            if (isNavVisible) {
+                isNavVisible = false
+            }
         }
     }
 
@@ -71,12 +94,18 @@ fun MainScreen() {
         // 1. 视频播放层
         TikTokPlayer(videos = videos)
 
-        // 2. 透明交互层：将屏幕分为上下两部分
+        // 2. 透明交互层
         Column(modifier = Modifier.fillMaxSize()) {
-            // 点击上方 1/3 区域显隐导航
-            Box(modifier = Modifier.fillMaxWidth().weight(1f).clickable { isNavVisible = !isNavVisible })
-            // 下方 2/3 区域留给视频原有的播放/暂停点击逻辑
-            Box(modifier = Modifier.fillMaxWidth().weight(2f))
+            // 点击上方 1/3 区域显隐导航。
+            // 当呼出导航时，重置计时器。
+            Box(modifier = Modifier.fillMaxWidth().weight(1f).clickable { 
+                isNavVisible = !isNavVisible 
+                if (isNavVisible) {
+                    // 当显现时强制重置
+                    hideTimerResetTrigger++
+                }
+            })
+            Box(modifier = Modifier.fillMaxWidth().weight(2f)) 
         }
 
         // 3. 导航栏层
@@ -86,9 +115,12 @@ fun MainScreen() {
             exit = fadeOut() + slideOutVertically()
         ) {
             LazyRow(
+                state = lazyListState, // ✅ 核心修改 4：将 LazyRow 与状态绑定，这样才能监听它的滚动状态。
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Color.Black.copy(alpha = 0.5f))
+                    // 如果你需要点击导航栏除文字外的空白区域也重置计时器，则可以加在这里（不推荐，可能会导致文字难以点击）
+                    // .clickable(indication = null, interactionSource = remember { remember{ MutableInteractionSource() } }){ hideTimerResetTrigger++ }
                     .padding(top = 50.dp, bottom = 20.dp),
                 contentPadding = PaddingValues(horizontal = 20.dp),
                 horizontalArrangement = Arrangement.spacedBy(25.dp)
@@ -96,6 +128,7 @@ fun MainScreen() {
                 item {
                     CategoryTab("全部", currentPlaylistName == null) { 
                         currentPlaylistName = null
+                        // 选中新列表时，通常立即隐藏导航栏，不需要延迟。符合标准 UX。
                         isNavVisible = false 
                     }
                 }
@@ -138,7 +171,6 @@ fun VideoPage(uri: Uri, play: Boolean) {
     var pausedByUser by remember { mutableStateOf(false) }
     var isAppInForeground by remember { mutableStateOf(true) }
 
-    // 处理后台播放问题
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_PAUSE) isAppInForeground = false
